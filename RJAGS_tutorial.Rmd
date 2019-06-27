@@ -1,0 +1,1212 @@
+---
+title: "Using JAGS"
+author: "Sam Voisin"
+date: "June 18, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Using JAGS with R
+
+```{r libraries}
+
+library(coda)
+library(rjags)
+
+```
+
+There are four steps to using JAGS in R:
+
+1) Specify the model
+
+2) Set up the model
+
+3) Run the MCMC sampler
+
+4) Perform post processing
+
+We will use an example from the *Bayesian Statistics: Techniques and Models* course offered by UC Santa Cruz on Coursera.org to demonstrate these steps:
+
+We want to model the percentage change in employee headcount ($y_i$) at a given company in an inudstry we have identified.
+
+### Step 1: Specify the model
+
+Our model is as follows:
+$$
+y_i \sim \mathcal{N}(\mu, \sigma^2 = 1) \\
+\mu \sim \mathcal{t}(0, 1, 1) \\
+$$
+
+**Note:** The prior distribution is a *student's t* distribution with center at $0$, a scale parameter of $1$ and $1$ degree of freedom. This is also known as the *Cauchy* distribution.
+
+The posterior distribution in a simplified form is proportional to function $g(\mu)$ as $g(\mu)$ lacks the necessary normalizing constant required of a probability distribution.
+
+$$
+p(\mu | y_1, ..., y_n) \propto g(\mu) = \frac{\exp \left[n (\bar{y}\mu - \frac{\mu^2}{2}) \right]}{1 + \mu^2}
+$$
+The model is specified in JAGS using a character string as depicted below. This is usually placed in a separate text file, but for this short demonstration it is included here.
+
+```{r}
+
+mod_string <- "model {
+  for (i in 1:n) {
+    y[i] ~ dnorm(mu, 1.0/sig2)
+  }
+  
+  mu ~ dt(0.0, 1.0/1.0, 1)
+  
+  sig2 = 1.0
+  
+}"
+
+```
+
+**Note:** The Normal distribution is parameterized using precision instead of variance in JAGS.
+
+The student's t distribution is parameterized by $\mu$ (location), $\tau$ (precision - the inverse scale parameter), and $k$ (degrees of freedom).
+
+We are assuming we already know $\sigma^2$ so we set `sig2 = 1`.
+
+### Step 2: Set up the model
+
+We will first enter the data and set a random seed.
+
+```{r, data}
+
+set.seed(1)
+ydat <- c(1.2, 1.4, -0.5, 0.3, 0.9, 2.3, 1.0, 0.1, 1.3, 1.9)
+n <- length(ydat)
+
+```
+
+
+The data we pass to JAGS must be a list where variables are named the same thing as we called them in step 1 when we specified the model. We also need to specify the parameters. If we were attempting to estimate additional parameters we could add them to the vector `params`.
+
+```{r}
+
+data_jags = list(y = ydat, n = n)
+params = c("mu")
+
+```
+
+To give JAGS initial values, we need to write a function. The function doesn't take any arguments. But it creates a variable called inits and places that into a list where we create a value for each parameter in the model. Our only parameter is $\mu$ which we set to zero as a floating point value here.
+
+Initial values can be explicity set as depicted below, or they can be random using a function call to a number generator (e.g. `rnorm`).
+
+```{r initial_vals}
+
+inits <- function() {
+  inits <- list("mu" = 0.0)
+}
+
+```
+
+Finally, we are going to compile the model.
+
+Using the `jags.model` function from the `rjags` library. The first argument for `jags.model` is the model string stored as `mod_string` above. Again, this is normally created in a seperate text file. For this demonstration we need to create a text connection for `mod_string`. The second argument is the data vector `data_jags`. We then add our initial values and compile the model.
+
+```{r compile_model}
+
+mod <- jags.model(
+  file = textConnection(mod_string),
+  data = data_jags,
+  inits = inits
+  )
+
+```
+
+Note the output of the model. There are 10 observed nodes representing the data vector `ydat`. There is also one *unobserved stochastic node* which represents our parameter of interest, $\mu$.
+
+
+
+
+### Step 3. Run the MCMC sampler
+
+The are two important components to step 3. First is passing the model to the sampler. Second is telling the sampler how many iterations we want it to update. Here we will update for 500 iterations. These are not saved anywhere. We can consider these iterations *burn-in* to give the Markov chain time to find the stationary distribution.
+
+```{r}
+
+update(mod, 500)
+
+```
+
+The next step is using the `coda.samples` function to simulate a Markov chain and save the samples we generate.
+
+We do not need to provide initial values for this because we have already run the chain starting at the value of $\mu$ we specified in the `inits` function. The chain has already been run for 500 iterations. The `coda.samples` function is just picking up where the chain left off. We will run the chain for an additional 1000 samples.
+
+```{r}
+
+mod_sim <- coda.samples(model = mod,
+                        variable.names = params,
+                        n.iter = 1000)
+
+```
+
+
+### Step 4. Post processing
+
+This is where we evaluate the Markov chains we've simulated to determine if they're suitable for inference. The `coda` library loaded above has tools to help with this step starting with a traceplot and density estimate for the posterior distribution of $\mu$.
+
+```{r traceplot}
+
+plot(mod_sim)
+
+```
+
+The base R function `summary` tells us which iterations of the chain we are using and some statistics related to our Markov chain such as the estimated posterior mean, posterior standard deviation, and standard error estimates.
+
+```{r summary}
+
+summary(mod_sim)
+
+```
+
+The plots below depict autocorrelation for various lags in the chain we simulated. We can see the autocorrelation go to zero almost immediately. This is a good sign that our simulations form a true markov chain (i.e. the process is "memory-less").
+
+Auto correlation is important because it tells us how much information is available in the Markov chain. Sampling 1000 iterations from a highly correlated Markov chain yields less information about the stationary distribution than we would obtain from 1,000 samples independently drawn from the stationary distribution. This is central to the concept of *effective sample size*.
+
+```{r}
+
+autocorr.plot(mod_sim)
+
+```
+
+The effective sample size of the $\mu$ markov chain above is show below. Remember, our sampler ran for 1,000 iterations.
+
+```{r}
+
+effectiveSize(mod_sim)
+
+```
+
+We can *thin* our chain to improve the autocorrelation in the chain. If we take the position of the chain at every 3rd value we will have reduced our number of samples to $334$. However, the effective sample size is now also $334$. There are far fewer samples here, but they are *better* samples in that they should be more representative of the posterior distribution. The example below is for the $\mu$ parameter.
+
+```{r}
+
+thin_3 <- seq(1, 1000, 3)
+thinned_chain <- mod_sim[[1]][thin_3, "mu"]
+effectiveSize(as.mcmc(thinned_chain))
+
+```
+
+
+---
+
+\newpage
+
+## Gibbs Sampler 
+
+What if we want to model the above problem as a Normal-Gamma posterior distributions, but we do not know the variance $\sigma^2$? We can find the full conditional posterior distributions for $\mu$ and $\sigma^2$ and use a *Gibbs sampler* to generate samples from the joint posterior distribution $p(\mu, \sigma^2 | y)$.
+
+We will follow the same steps as in the previous example above.
+
+### Step 1: Specify the model
+
+Our likelihood and priors are:
+
+$$
+y_i \sim \mathcal{N}(\mu, \sigma^2) \\
+\mu \sim \mathcal{N}(\mu_0, \tau_0) \\
+\frac{1}{\sigma^2} \sim \mathcal{G}\left(\frac{\nu_0}{2}, \frac{\nu_0 \sigma^2_0}{2}\right)
+$$
+
+We parameterize the gamma distribution above using the shape and rate parameterization and divide both parameters by two. This makes for convenience when doing the algebra for finding the joint and full coditional posteriors.
+
+**Note:** It is mathematically convenient to use the Gamma distribution for our purposes. For this demonsration we will denote the precision as $\frac{1}{\sigma^2}$ for consistency and because it provides some intuition with regards to the posterior hyperparameters.
+
+The joint posterior distribution is a Normal-Gamma distribution. We can use the Normal-Normal and Normal-Gamma conjugate families to find the full conditional posterior distributions:
+
+$$
+\mu | \sigma^2, y \sim \mathcal{N} \left(\frac{\frac{\mu_0}{\tau_0^2} + \frac{n\bar{y}}{\sigma^2}}{\tau_0^2 + \frac{n}{\sigma^2}}, \frac{1}{\tau_0^2 + \frac{n}{\sigma^2}} \right) \\
+\frac{1}{\sigma^2} | \mu, y \sim \mathcal{G} \left( \frac{\nu_0 + n}{2}, \frac{\nu_0 \sigma_0^2 + n S_n^2}{2} \right) \\
+\text{where } S_n^2 = \frac{1}{n} \sum_{i = 1}^n (y_i - \mu)^2 \text{ (i.e. the sum of squares for the likelihood distribution)}
+$$
+The Normal-Gamma model is specified in JAGS using a character string as depicted below.
+
+We will set the parameters for our prior distribions as follows:
+$$
+\mu_0 = 0.0 \\
+\tau_0 = 0.5 \\
+\nu_0 = 1.0 \\
+\sigma^2_0 = 0.5
+$$
+Feel free to adjust values and experiment with the output.
+
+```{r}
+
+mod_string <- "model {
+  for (i in 1:n) {
+    y[i] ~ dnorm(mu, sig2_inv)
+  }
+
+  mu ~ dnorm(mu_0, 1.0/tau_0)
+  sig2_inv ~ dgamma(nu_0, nu_0_sig2_0)
+
+  tau_0 = 0.5
+  mu_0 = 0.0
+  nu_0 = 1.0
+  nu_0_sig2_0 = 0.5
+  
+}"
+
+```
+
+---
+
+### Step 2: Set up the model
+
+We have already set the random seed and prepared data for JAGS by creating a list of inputs. However, we need to create an updated list of parameters.
+
+```{r}
+
+data_jags = list(y = ydat, n = n)
+params = c("mu", "sig2_inv")
+
+```
+
+
+We modify the `init` function to provide new initial values for our parameters of interest.
+
+```{r}
+
+inits <- function() {
+  inits <- list("mu" = 0.0, "sig2_inv" = 1.0)
+}
+
+```
+
+Now we are ready to compile the new model. This time we will generate three concurrent Markov chains. This will allow us to compare three different stochastic processes to assess convergence.
+
+```{r}
+
+mod <- jags.model(
+  file = textConnection(mod_string),
+  data = data_jags,
+  inits = inits,
+  n.chains = 3
+  )
+
+```
+
+There are now *two* unoverserved stochastic nodes ($\mu$ and $\frac{1}{\sigma^2}$) in addition to the 10 observed data nodes.
+
+
+### Step 3. Run the MCMC sampler
+
+Performing burn-in for the chains:
+
+```{r}
+
+update(mod, 500)
+
+```
+
+The next step is using the `coda.samples` function to simulate a Markov chain and save the samples we generate.
+
+We do not need to provide initial values for this because we have already run the chain starting at the values we specified in the `inits` function. The chains have already been run for 500 iterations. The `coda.samples` function is just picking up where the chain left off. We will run the chains for an additional 1000 samples each.
+
+```{r}
+
+mod_sim <- coda.samples(model = mod,
+                        variable.names = params,
+                        n.iter = 1000)
+
+```
+
+
+### Step 4. Post processing
+
+The black, red, and green lines of the traceplot represent the three markov chains we generated. From a first look, all of these seem to converge to the same location for both $\mu$ and $phi$. 
+
+```{r}
+
+plot(mod_sim)
+
+```
+
+The empirical confidence intervals for our parameters are
+$\mu = 0.8627 \pm .005$ and $\phi = \frac{1}{\sigma^2} = 1.4910 \pm 0.012$
+
+```{r}
+
+summary(mod_sim)
+
+```
+
+The scatter plot below shows the samples generated by our Gibbs sampler at each iteration. The red line represents the mean of $\mu$ samples while blue represents the mean of $\phi$ samples.
+
+```{r}
+
+samples_frame <- as.data.frame(
+  rbind(mod_sim[[1]], mod_sim[[2]], mod_sim[[3]])
+  )
+
+plot(samples_frame$mu, samples_frame$sig2_inv,
+     type = "p",
+     col = rgb(red = 0, green = 0, blue = 0, alpha = 0.2),
+     pch = 19,
+     xlab = "mu",
+     ylab = "phi",
+     xlim = c(-0.25, 2),
+     ylim = c(0, 5))
+abline(v = 0.8627, col = "red")
+abline(h = 1.4910, col = "blue")
+
+
+```
+
+
+The plots below depict autocorrelation for various lags in the first chain we simulated. We can see the autocorrelation go to zero almost immediately. This is a good sign that our simulations form a true markov chain (i.e. the process is "memory-less").
+
+Auto correlation is important because it tells us how much information is available in the Markov chain. Sampling 1000 iterations from a highly correlated Markov chain yields less information about the stationary distribution than we would obtain from 1,000 samples independently drawn from the stationary distribution. This is central to the concept of *effective sample size*.
+
+```{r}
+
+autocorr.plot(mod_sim[[1]])
+
+```
+
+The effective sample size of the chain above is show below. Remember, our sampler ran for 1,000 iterations.
+
+```{r}
+
+effectiveSize(mod_sim[[1]])
+
+```
+
+We can *thin* our chain to improve the autocorrelation in the chain. If we take the position of the chain at every fifth value we will have reduced our number of samples to $200$. However, the effective sample size is now also $200$. There are far fewer samples here, but they are *better* samples in that they should be more representative of the posterior distribution. The example below is for the $\mu$ parameter.
+
+```{r}
+
+thin_5 <- seq(1, 1000, 5)
+thinned_5_chain_mu <- mod_sim[[1]][thin_5, 1]
+effectiveSize(thinned_5_chain_mu)
+
+```
+
+
+```{r}
+
+hist(thinned_5_chain_mu)
+
+```
+
+Instead of thinning by taking every 5th value, we can try to keep more values by thinning on every 3rd value. Below we are keeping every 3rd value. The effective sample size again matches the chain, and we have a larger pool of samples.
+
+```{r}
+
+thin_3 <- seq(1, 1000, 3)
+thinned_3_chain_mu <- mod_sim[[1]][thin_3, 1]
+effectiveSize(thinned_3_chain_mu)
+
+```
+
+Note that the histogram below does not have the same break close to zero as the histogram above.
+
+```{r}
+
+hist(thinned_3_chain_mu)
+
+```
+
+See the *Raftery and Lewis' diagnostic* for estimating the number of iterations needed for a given level of precision in posterior samples, as well as estimating burn-in, when quantiles are the posterior summaries of interest (e.g. credible intervals).
+
+---
+
+\newpage
+
+## Linear Regression
+
+We will use data from the `car` package in R for an example of Bayesian Linear Regression.
+
+```{r}
+
+library(car)
+data(Leinhardt)
+str(Leinhardt)
+
+```
+
+```{r}
+
+head(Leinhardt)
+
+```
+
+We can see the marginal relationships between all of the variables using the `pairs` function.
+
+```{r}
+
+pairs(Leinhardt)
+
+```
+
+```{r}
+
+plot(infant ~ income, data = Leinhardt)
+
+```
+
+The relationship between infant mortality and income does *not* seem to be linear. A linear regression would not be appropriate for these variables. However, these variables are both completely positive and very right skewed. It may be useful to view them on the log scale.
+
+```{r}
+
+Leinhardt$loginfant <- log(Leinhardt$infant)
+Leinhardt$logincome <- log(Leinhardt$income)
+
+plot(loginfant ~ logincome, data = Leinhardt)
+
+```
+
+The trend in this plot displays a relationship that is far closer to being linear.
+
+We can begin our modeling exercise with a OLS linear model. We will compare our Bayesian Regression to this model later as a "gut-check" of our resutls.
+
+```{r}
+
+dat <- na.omit(Leinhardt)
+OLS_mod <- lm(loginfant ~ logincome, data = dat)
+summary(OLS_mod)
+
+```
+
+As a reminder we are implicitly making the following assumptions by using a classical OLS model for our data:
+- The relationship of the predictor to the response is linear (i.e. the regression model is linear in the parameters).
+- Residuals are normally distributied with mean $0$ and variance $\sigma^2$.
+- Residuals are homoskedastic (constant variance).
+- Residuals and predictors are uncorrelated.
+
+We can perform a quick check of these assumptions with out OLS model using the plot function:
+
+```{r}
+
+par(mfrow = c(2, 2))
+plot(OLS_mod)
+
+```
+
+With the exception of Saudi Arabia and Libya, our model seems to *largely* fall in line with our OLS assumptions.
+
+---
+
+Now that we have our `OLS_mod` with which to compare our Bayesian regression we can proceed with the rJAGS model.
+
+
+### Step 1: Specify the model
+
+We first specify the hierarchicial form of our model. We will give the distribution for $\beta_j$ a large variance (small precision) so that our prior distribution is not very informative. It will have little impact on the posterior mean estimate.
+
+We will again parameterize $\sigma^2$ with an Inverse Gamma distribution. Our prior sample size parameter will be $5$ and our prior estimate for $\sigma^2$ will be $10$. As with the gibbs sampler above, we will input this distribution as the Gamma distribution for the prcision parameter $\phi$.
+
+$$
+y | X, \beta, \sigma^2 \sim \mathcal{N}(X \beta, \phi) \\
+\beta \sim \mathcal{N}\left(0, \frac{1}{1 \times 10^6} \right) \\
+\sigma^2 \sim \mathcal{IG}\left(\frac{5}{2}, \frac{5 \times 10}{2} \right) \\
+\text{i.e. } \phi \sim \mathcal{G}\left(\frac{5}{2}, \frac{5 \times 10}{2} \right)
+$$
+
+```{r}
+
+mod_string_reg <- "model {
+
+  # likelihood
+  for (i in 1:n) {
+    y[i] ~ dnorm(mu[i], prec)
+    mu[i] <- b[1] + b[2] * log_income[i]
+  }
+
+  # prior for coefficients
+  for (j in 1:2) {
+    b[j] ~ dnorm(0.0, 1.0 / 1.0e6)
+  }
+
+  # prior for unaccounted for variance
+  prec ~ dgamma(5.0 / 2.0, 5.0 * 10.0 / 2)
+  sig2 <- 1.0 / prec
+  sig <- sqrt(sig2)
+
+}"
+
+```
+
+---
+
+### Step 2: Set up the model
+
+```{r}
+
+data_reg_jags = list(y = dat$loginfant,
+                     n = nrow(dat),
+                     log_income = dat$logincome)
+
+```
+
+The parameters `b[1]` and `b[2]` were specified using an index in step 1. We can give JAGS the general parameter title `b` for this vector.
+
+Our model has been set up in such a way so we can choose if we want to find the precision, variance, or the standard deviation from the likelihood. We will choose to model the value of the standard deviation, `sig`.
+
+```{r}
+
+params_reg = c("b", "sig")
+
+```
+
+
+```{r}
+
+inits_reg <- function() {
+  inits <- list("b" = rnorm(2, 0, 100), "prec" = rgamma(1, 1.0, 1.0))
+}
+
+```
+
+As an aside, the $\mathcal{G}(1, 1)$ distribution is an *exponential distribution*.
+
+We will again run three seperate chains. Each chain will be initialized with a seperate random draw as specified above. This will give us different starting points and allow us to better compare the chains for convergence later.
+
+```{r}
+
+mod_reg <- jags.model(
+  file = textConnection(mod_string_reg),
+  data = data_reg_jags,
+  inits = inits_reg,
+  n.chains = 3
+  )
+
+```
+
+---
+
+### Step 3. Run the MCMC sampler
+
+We will perform burn-in for the chains for $1,000$ iterations this time.
+
+```{r}
+
+update(mod_reg, 1000)
+
+```
+
+The next step is using the `coda.samples` function to simulate a Markov chains and save the samples we generate.
+
+We iterate all three chains for an additional $5,000$ iterations.
+
+
+```{r}
+
+mod_sim_reg <- coda.samples(model = mod_reg,
+                            variable.names = params_reg,
+                            n.iter = 5000)
+
+# stack chain matrices vertically
+comb_chains <- rbind(mod_sim_reg[[1]], mod_sim_reg[[2]], mod_sim_reg[[3]])
+
+```
+
+---
+
+### Step 4. Post processing
+
+#### Convergence Diagnostics
+
+We should assess our simulations for convergence to the stationary posterior distribution before expending the energy to make inferences from the posterior distributions.
+
+```{r}
+
+plot(mod_sim_reg)
+
+```
+
+The trace plots don't seem to display any long term upward or downward trends. This is a good sign that we have converged. We will also check for convergence using the *Gelman-Rubin Diagnostic* on our three Markov chains.
+
+The Gelman-Rubin Diagnostic aims to compare the variance *within* chains to the variance *between* chains.
+
+$$
+\text{The sample variance of chain j:} \\
+s_j^2 = \frac{1}{n-1} \sum_{i=1}^n (\theta_{ij} - \bar{\theta_j})^2 \\
+
+\text{The average variance within chains:} \\
+W = \frac{1}{m} \sum_{j = 1}^m s_j^2 \\
+
+\text{The average of each chain's mean:} \\
+\bar{\bar{\theta}} = \frac{1}{m} \sum_{j = 1}^m \bar{\theta_j} \\
+
+\text{Variance between the chains:} \\
+B = \frac{n}{m - 1} \sum_{j = 1}^m (\bar{\theta_j} - \bar{\bar{\theta}})^2 \\
+
+\text{The pooled variance:} \\
+\hat{Var(\theta)} = \left(1 - \frac{1}{n} \right) W + \frac{1}{n} B \\
+
+\text{And finally, the Gelman-Rubin Diagnostic:} \\
+\hat{R} = \sqrt{\frac{\hat{Var(\theta)}}{W}}
+$$
+
+The Gelman-Rubin Diagnostic can be calculated with the `gelman.diag` function in the `coda` package.
+
+```{r}
+
+gelman.diag(mod_sim_reg)
+
+```
+
+The *potential scale reduction factors* for the parameters we are interested are all very close to 1, indicating that we probably have converged to the posterior distribution.
+
+We should also look at the *autocorrelation*:
+
+```{r}
+
+autocorr.diag(mod_sim_reg)
+
+```
+
+```{r}
+
+autocorr.plot(mod_sim_reg[[1]])
+
+```
+
+The autocorrelations are quite high for both $\beta$ terms in the initial lags. This is an indication that we may have a low effective sample size. Our of the $15,000$ samples we generated for ecah parameter our effective sample sizes are:
+
+```{r}
+
+effectiveSize(mod_sim_reg)
+
+```
+
+Indeed, the autocorrelation shown above is dramatically reducing the amount of information we can gain from our markov chain. These effective sample sizes are sufficient for estimating a posterior mean. However, quantifying uncertainty via posterior probability interval would require more effective samples and running a longer simulation.
+
+
+#### Parameter Inference
+
+We can see that the $\beta$ coefficient values in our estimate are very close to those in our `OLS_mod` reference.
+
+```{r}
+
+summary(mod_sim_reg)
+
+```
+
+
+```{r}
+
+summary(OLS_mod)
+
+```
+
+**Remember:** When interpreting the parameters of our model, we have to consider the log scale due to our transformation.
+
+
+## Bayesian ANOVA / Cell Means Model
+
+We can also use `rJAGS` for Bayesian ANOVA (Analysis of Variance) model in which the explanatory variables are categorical. As an example of a one way ANOVA model, we will examine the `PlantGrowth` data set.
+
+```{r}
+
+data("PlantGrowth")
+head(PlantGrowth)
+
+```
+
+```{r}
+
+str(PlantGrowth)
+
+```
+
+The box plots summarize the distribution of the data for each of the three groups, `ctrl`, `trt1`, and `trt2`. The bold horizontal line tells us the median of yield for the `ctrl` group is slightly greater than $5$, and the bulk of the `ctrl` data are located between $4.5$ and $5.5$. It appears that `trt2` has the highest mean yield, but it is unclear if each group has equal variance.
+
+```{r}
+
+boxplot(weight ~ group, data = PlantGrowth)
+
+```
+
+We will again use a standard linear model for a reference point.
+
+```{r}
+
+l_mod <- lm(weight ~ group, data = PlantGrowth)
+summary(l_mod)
+
+```
+
+We can also use the `anova` function to obtain an *analysis of variance table*.
+
+```{r}
+
+anova(l_mod)
+
+```
+
+The ANOVA table describes the results of an F-test for each factor variable - in our case the group variable. It tells us whether or not there is evidence for a *group effect* in the data. It does this by calculating the variability between the factors.
+
+
+We will now fit a *cell means model* where, rather than fitting an overall mean, we instead fit an individual mean for each group.
+
+### Step 1: Specify the model
+
+In the model string below $y_i$ is distributed normally as in the previous examples, but the $mu$ parameter is indexed by group through `grp[i]`. For each of the three cell means we will use a fairly uninformative prior as in the previous example. We will again model the standard deviation of the observations `sig`.
+
+```{r}
+
+mod_string_cm <- "model {
+
+  # likelihood
+  for (i in 1:length(y)) {
+    y[i] ~ dnorm(mu[grp[i]], prec)
+  }
+
+  # prior for coefficients
+  for (j in 1:3) {
+    mu[j] ~ dnorm(0.0, 1.0 / 1.0e6)
+  }
+
+  prec ~ dgamma(5.0 / 2.0, 5.0 * 10.0 / 2)
+  sig2 <- 1.0 / prec
+  sig <- sqrt(sig2)
+
+}"
+
+```
+
+---
+
+### Step 2: Set up the model
+
+```{r}
+
+data_cm_jags = list(y = PlantGrowth$weight,
+                    grp = PlantGrowth$group)
+
+```
+
+```{r}
+
+params_cm = c("mu", "sig")
+
+```
+
+
+```{r}
+
+inits_cm <- function() {
+  inits <- list("mu" = rnorm(3, 0, 100), "prec" = rgamma(1, 1.0, 1.0))
+}
+
+```
+
+We will again run three seperate chains. Each chain will be initialized with a seperate random draw as specified above. This will give us different starting points and allow us to better compare the chains for convergence later.
+
+```{r}
+
+mod_cm <- jags.model(
+  file = textConnection(mod_string_cm),
+  data = data_cm_jags,
+  inits = inits_cm,
+  n.chains = 3
+  )
+
+```
+
+---
+
+### Step 3. Run the MCMC sampler
+
+We will perform burn-in for the chains for $1,000$ iterations this time.
+
+```{r}
+
+update(mod_cm, 1000)
+
+```
+
+The next step is using the `coda.samples` function to simulate a Markov chains and save the samples we generate.
+
+We iterate all three chains for an additional $5,000$ iterations.
+
+
+```{r}
+
+mod_sim_cm <- coda.samples(model = mod_cm,
+                           variable.names = params_cm,
+                           n.iter = 5000)
+
+# stack chain matrices vertically
+comb_chains_cm <- as.mcmc(do.call(rbind, mod_sim_cm))
+
+```
+
+---
+
+### Step 4. Post processing
+
+#### Convergence Diagnostics
+
+Convergence diagnostics look good:
+
+```{r}
+
+gelman.diag(mod_sim_cm)
+
+```
+
+```{r}
+
+autocorr.diag(mod_sim_cm)
+
+```
+
+```{r}
+
+autocorr.plot(mod_sim_cm[[1]])
+
+```
+
+```{r}
+
+effectiveSize(mod_sim_cm)
+
+```
+
+
+#### Parameter Inference
+
+```{r}
+
+summary(mod_sim_cm)
+
+```
+
+
+```{r}
+
+summary(l_mod)
+
+```
+
+We can find the *highest posterior density intervals* for our parameters with the `coda::HPDinterval` function.
+
+```{r}
+
+HPDinterval(comb_chains_cm)
+
+```
+
+## Bayesian Logisitic Regression
+
+First, a quick recap of logistic regression. Logistic regression takes its name from the *logit* link function it utilizes:
+
+$$
+y_i | \phi_i \sim Bern(\phi_i) \\
+\phi = Pr(Y_i = 1 | \beta, X_i) \\
+\text{logit}(\phi) \equiv \text{log} \left( \frac{\phi_i}{1 - \phi_i} \right) = \beta_0 + \beta_1 x_i
+\implies E[Y_i] = \phi_i = \text{logit}^{-1}(\beta_0 + \beta_1 x_i) = \frac{1}{\exp\{-(\beta_0 + \beta_1 x_i)\} + 1}
+$$
+
+The final expression is a *sigmoid*. It provides us with a non-linear boundary with which we can distinguish binary characteristics. The *softmax* function is a multivariate analogue of the sigmoid. The plots below illustrate the value of a non-linear *decision boundary* using dummy data.
+
+```{r, echo = FALSE}
+
+x <- sort(c(runif(11, -10, 0), runif(10, 0, 10)))
+y <- c(rep(0, 11), rep(1, 10))
+
+b <- 0.6
+e <- seq(-10, 10, 1)
+res <- 1 / (exp(-b *e) + 1)
+
+plot(x, y, col = "red", xlim = c(-10, 10), ylim = c(0, 1))
+lines(e, res, type = "l", xlab = "Predictor", ylab = "Response")
+
+```
+
+
+```{r, echo = FALSE}
+
+b <- 0.08
+e <- seq(-10, 10, 1)
+res <- b * e + 0.5
+
+plot(x, y, col = "red", xlim = c(-10, 10), ylim = c(-0.5, 1.5))
+lines(e, res, type = "l", xlab = "Predictor", ylab = "Response")
+
+```
+
+
+```{r}
+
+library(boot)
+data(urine)
+head(urine)
+
+```
+We have seven variables:
+ - `r` an indicator of the presence of a calcium oxalate crystal. This is the binary response variable we are seeking to model.
+ - `gravity` specific gravity
+ - `ph` the sample acidity
+ - `omso` osmolarity
+ - `cond` conductivity
+ - `urea` urea concentration
+ - `calc` the calcium concentration
+ 
+There are two rows with missing data in our data set. We will simply remove them for this demonstration.
+
+```{r}
+
+dat <- na.omit(urine)
+dim(dat)
+
+```
+
+
+```{r}
+
+pairs(dat)
+
+```
+
+Several covariates are strongly correlated with each other, for example `osmo` and `gravity`. This is a problem for inference but not necessarily a problem for prediction. The primary goal of this analysis is to determine which variables are related to the presence of calcium oxalate crystals (`r`), so we will have to find a way to handle with the collinearity between the predictors. This is a commonly encountered problem called *variable selection*.
+
+One way to address this problem is by using a linear model where the priors for $\beta$ coefficients place greater probability density around zero such as the double exponential or "Laplace" distribution. Posterior estimates near zero on the coefficients indicate weak relationships. This is known as the *Bayesian Lasso* ("BLASSO").
+
+Rather than tailoring a specific prior for each individual $\beta$ coefficient based on the scale of its covariate $X$, we normalize and standardize each predictor. We can use the `scale` function here. **Note:** If we had categorical variables we would exclude them from this operation.
+
+
+```{r}
+
+X <- data.matrix(dat[ , -1])
+X <- scale(dat[ , -1], center = TRUE, scale = TRUE)
+
+# check the result
+apply(X, 2, mean) # numerically zero for computing purposes
+apply(X, 2, sd)
+
+```
+
+
+### Step 1: Specify the model
+
+Instead of modeling $\phi_i$ directly, in logistic regression, we model the logit of $\phi_i$. The logit of $\phi_i$ is a *latent variable*. Latent variables are variables that are not directly observed but are rather inferred through a mathematical model from other variables that are observed.
+
+We place a fairly uninformative prior on the intercept with variance $25$. This is fairly high for a logistic regression model. We use the double exponential prior for the $\beta_j$ values with the inverse scale parameter set to $\sqrt{2}$.
+
+In JAGS, the double exponential distribution is parameterized with a mean parameter $\mu$ and an inverse scale (i.e. precision) parameter $\tau$. The double exponential pdf has the form
+
+$$
+p(\beta | \mu, \tau) = \frac{\tau}{2} \exp\{ -\tau | \beta - \mu|  \}
+$$
+
+Notice the syntax of the block of JAGS code in the model specification where it looks like we are assigning the regression formula to the `logit` function. This is how *link functions* are specified in JAGS. The following is an excerpt from the JAGS documentation:
+
+"[Link functions in the BUGS module] are smooth scalar-valued functions that may be specified using an S-style replacement function notation. So, for example, the log link `log(y) <- x` is equivalent to the more direct use of its inverse, the exponential function: `y <- exp(x)` This usage comes from the use of link functions in genealized linear models."
+
+```{r}
+
+mod_string_blasso <- "model {
+  for (i in 1:length(y)) {
+    
+    y[i] ~ dbern(p[i])
+
+    logit(p[i]) <- intcpt + b[1] * gravity[i] +
+                            b[2] * ph[i] +
+                            b[3] * osmo[i] +
+                            b[4] * cond[i] +
+                            b[5] * urea[i] +
+                            b[6] * calc[i]
+  }
+  
+  # beta for intercept
+  intcpt ~ dnorm(0.0, 1.0 / 25.0)
+
+  # beta for predictors
+  for (j in 1:6) {
+    b[j] ~ ddexp(0.0, sqrt(2.0))
+  }
+
+} "
+
+```
+
+---
+
+### Step 2: Set up the model
+
+```{r}
+
+data_blasso <- list(y = dat$r,
+                    gravity = X[ , "gravity"],
+                    ph = X[ , "ph"],
+                    osmo = X[ , "osmo"],
+                    cond = X[ , "cond"],
+                    urea = X[ , "urea"],
+                    calc = X[ , "calc"])
+
+params_blasso <- c("intcpt", "b")
+
+inits_blasso <- function() {
+  inits <- list("intcpt" = rnorm(1, 0.0, 1.0 / 25.0),
+                "b" = rnorm(6, 0.0, 1))
+}
+
+```
+
+
+
+```{r}
+
+# compile model
+
+mod_blasso <- jags.model(
+  file = textConnection(mod_string_blasso),
+  data = data_blasso,
+  inits = inits_blasso,
+  n.chains = 3
+  )
+
+```
+
+---
+
+### Step 3. Run the MCMC sampler
+
+```{r}
+
+# burn in
+update(mod_blasso, 1000)
+
+# record samples
+mod_sim_blasso <- coda.samples(mod_blasso,
+                               variable.names = params_blasso,
+                               n.iter = 5000)
+
+comb_chains_blasso <- as.mcmc(do.call(rbind, mod_sim_blasso))
+
+```
+
+---
+
+### Step 4. Post processing
+
+For the purpose of this JAGS tutorial we will not do a full check of the convergence diagnostics. Note these simulations *do* show a degree of autocorrelation. In a true analysis this would have to be dealth with.
+
+#### Parameter Inference
+
+Below are posterior density estimates for each of the covariates: `b[1] - gravity`, `b[2] - ph`, `b[3] - osmo`, `b[4] - cond`, `b[5] - urea`, `b[6] - calc`.
+
+```{r}
+
+par(mfrow=c(3, 2))
+densplot(comb_chains_blasso[ , 1:6], xlim = c(-3, 3))
+
+```
+
+We are looking for evidence in these plots that the coefficients are not euqal to zero. It is clear that the coefficients for `gravity`, `cond`, and `calc` are significantly far from zero. Notice that the coefficient for `osmo` has a posterior distribution that resembles the double exponential prior and is almost centered on zero. This is strong evidence for removing `osmo` from the model. The same can be said for `ph`. The evidence for removing `urea` is not as strong. However, if we refer back to our pairwise scatter plots, we see that urea concentration is highly correlated with specific gravity. Therefore we will remove this variable.
+
+---
+
+We are now going to fit a new model with the covariates that we have decided to keep in the model: `gravity`, `cond`, and `calc`.
+
+```{r}
+
+mod_string_blasso2 <- "model {
+  for (i in 1:length(y)) {
+    
+    y[i] ~ dbern(p[i])
+
+    logit(p[i]) <- intcpt + b[1] * gravity[i] +
+                            b[2] * cond[i] +
+                            b[3] * calc[i]
+  }
+  
+  # beta for intercept
+  intcpt ~ dnorm(0.0, 1.0 / 25.0)
+
+  # beta for predictors
+  for (j in 1:3) {
+    b[j] ~ dnorm(0.0, 1.0 / 25.0)
+  }
+
+} "
+
+```
+
+---
+
+### Step 2: Set up the model
+
+```{r}
+
+data_blasso2 <- list(y = dat$r,
+                    gravity = X[ , "gravity"],
+                    cond = X[ , "cond"],
+                    calc = X[ , "calc"])
+
+params_blasso2 <- c("intcpt", "b")
+
+inits_blasso2 <- function() {
+  inits <- list("intcpt" = rnorm(1, 0.0, 1.0 / 25.0),
+                "b" = rnorm(3, 0.0, 1.0))
+}
+
+```
+
+
+
+```{r}
+
+# compile model
+
+mod_blasso2 <- jags.model(
+  file = textConnection(mod_string_blasso2),
+  data = data_blasso2,
+  inits = inits_blasso2,
+  n.chains = 3
+  )
+
+```
+
+
+```{r}
+
+# burn in
+update(mod_blasso2, 1000)
+
+
+# sampling
+mod_blasso2_sim <- coda.samples(model = mod_blasso2,
+                                variable.names = params_blasso2,
+                                n.iter = 5000)
+
+comb_chains_blasso <- as.mcmc(do.call(rbind, mod_blasso2_sim))
+
+
+plot(mod_blasso2_sim)
+
+gelman.diag(mod_blasso2_sim)
+autocorr.diag(mod_blasso2_sim)
+autocorr.plot(mod_blasso2_sim)
+effectiveSize(mod_blasso2_sim)
+
+dic2 = dic.samples(mod_blasso2,
+                   n.iter = 1000)
+
+
+```
+
+
+---
+
+## Poisson Regression
+
+
+
+
+
+
+
+
+
+
+
