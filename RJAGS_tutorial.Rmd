@@ -1200,6 +1200,212 @@ dic2 = dic.samples(mod_blasso2,
 
 ## Poisson Regression
 
+Data for this example comes from Peter Hoff's *A First Course in Bayesian Statistical Methods*. We will use the `sparrows.csv` data set.
+
+```{r}
+sparrows <- read.csv("sparrows.csv")
+sparrows <- sparrows[ , c("fledged", "age")]
+```
+
+#### Background Information
+
+*The following passage is sourced directly from the book mentioned above with little editing.*
+
+A sample from a population of 52 female song sparrows was studied over the course of a summer and their reproductive activities were recorded. In particular, the age and number of new offspring were recorded for each sparrow (Arcese et al, 1992).
+
+```{r}
+
+boxplot(fledged ~ age, data = sparrows, xlab = "age", ylab = "offspring")
+
+```
+
+The figure above shows boxplots of the number of offspring versus age. The figure indicates that two-year-old birds in this population had the highest median reproductive success, with the number of offspring declining beyond two years of age. This is not surprising from a biological point of view: One-year-old birds are in their first mating season and are relatively inexperienced compared to two-year-old birds. As birds age beyond two years they experience a general decline in health and activity.
+
+Suppose we wish to fit a probability model to these data, perhaps to understand the relationship between age and reproductive success, or to make population forecasts for this group of birds. Since the number of offspring for each bird is a non-negative integer $\{0,1,2,...\}$, a simple probability model for the response $Y$ (`fledged`) conditional on the predictor $X$ (`age`) would be a Poisson model. 
+
+One possibility would be to estimate $X\beta$ separately for each age group. However, the number of birds of each age is small and so the estimates of $X\beta$ would be imprecise. To add stability to the estimation we will assume that the mean number of offspring is a smooth function of age. We will want to allow this function to be quadratic so that we can represent the increase in mean offspring while birds mature and the decline they experience thereafter. We will use a log link function to account for the fact that $Y$ must be positive.
+
+$$
+X_i = [1, x_i, x_i^2]^T\\
+\log(E[Y]) = X\beta \\
+Y | \beta, X \sim \mathcal{Pois}(\exp\{ X\beta \})
+$$
+Our poisson regression model will be in the form
+$$
+\log(E[Y]) = \beta_0 + x_i \beta_1 + x_i^2 \beta_2
+$$
+
+```{r}
+
+# modify the data set
+sparrows[ , "intcpt"] <- rep(1, nrow(sparrows))
+sparrows[ , "age2"] <- sparrows[, "age"]^2
+
+```
+
+
+```{r}
+
+mod_string_pois <- "model {
+  for (i in 1:length(y)) {
+    y[i] ~ dpois(lmbda[i])
+    
+    # log link function
+    log(lmbda[i]) <- b[1] * intcpt[i] + b[2] * age[i] + b[3] * age2[i]
+  }
+
+    # priors for coefficients
+    for (j in 1:3) {
+      b[j] ~ dnorm(0.0, 1.0 / 25.0)
+    }
+
+}"
+
+```
+
+
+```{r}
+
+params_pois <- c("b")
+
+inits_pois <- function() {
+  inits <- list("b" = rnorm(3, 0.0, 1.0 / 25.0))
+}
+
+data_pois <- list(y = sparrows$fledged,
+                  intcpt = sparrows$intcpt,
+                  age = sparrows$age,
+                  age2 = sparrows$age2)
+
+```
+
+
+```{r}
+
+# compile model
+mod_pois <- jags.model(
+  file = textConnection(mod_string_pois),
+  data = data_pois,
+  n.chains = 3
+  )
+
+```
+
+```{r}
+
+# burn-in
+update(mod_pois, n.iter = 1000)
+
+# sampling
+mod_sim_pois <- coda.samples(model = mod_pois,
+                             variable.names = params_pois,
+                             n.iter = 1e4)
+
+comb_chains_pois <- as.mcmc(do.call(rbind, mod_sim_pois))
+
+```
+
+```{r}
+
+plot(mod_sim_pois)
+
+```
+
+```{r}
+
+# bad autocorrelation
+autocorr.diag(mod_sim_pois)
+
+```
+
+```{r}
+
+effectiveSize(mod_sim_pois)
+
+```
+
+We can try to take more samples and use some thinning to reduce the autocorrelation in order to improve the effective sample size.
+
+```{r}
+
+# compile model
+mod_pois <- jags.model(
+  file = textConnection(mod_string_pois),
+  data = data_pois,
+  n.chains = 3
+  )
+
+```
+
+Sampling this many samples and thinning means our model will take significantly longer to fit.
+
+```{r}
+
+# burn-in
+update(mod_pois, n.iter = 1000)
+
+# sampling
+mod_sim_pois2 <- coda.samples(model = mod_pois,
+                             variable.names = params_pois,
+                             thin = 10,
+                             n.iter = 1e5)
+
+comb_chains_pois2 <- as.mcmc(do.call(rbind, mod_sim_pois))
+
+```
+
+
+
+```{r}
+
+# slightly better on their surface
+plot(mod_sim_pois2, density = FALSE)
+
+```
+
+```{r}
+
+autocorr.diag(mod_sim_pois2)
+
+```
+
+```{r}
+
+# better effective sample size by a factor of ~10...
+effectiveSize(mod_sim_pois2)
+
+```
+
+```{r}
+
+pois_sum <- summary(mod_sim_pois2)
+pois_sum
+
+```
+
+```{r}
+
+X <- data.matrix(cbind(sparrows$intcpt, sparrows$age, sparrows$age2))
+pois_coefs <- c(pois_sum$statistics[1, 1], 
+                pois_sum$statistics[2, 1],
+                pois_sum$statistics[3, 1])
+
+# must exponentiate to reverse effect of log link fcn
+yhat <- exp(X %*% pois_coefs)
+resids_pois <- yhat - sparrows$fledged
+
+```
+
+```{r}
+
+plot(sparrows$fledged, resids_pois)
+abline(h = mean(resids_pois), col = "red")
+
+```
+
+
+
+
 
 
 
