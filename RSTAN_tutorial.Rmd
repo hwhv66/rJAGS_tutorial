@@ -1,0 +1,470 @@
+---
+title: "RSTAN tutorial"
+author: "Sam Voisin"
+date: "August 6, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## RSTAN
+
+```{r}
+
+library(mlmRev)
+library(lme4)
+library(rstanarm)
+library(ggplot2)
+library(bayesplot)
+library(ggmcmc)
+
+```
+
+```{r}
+
+# Use example dataset from mlmRev package: GCSE exam score
+data(Gcsemv, package = "mlmRev")
+summary(Gcsemv)
+
+# Make Male the reference category and rename variable
+Gcsemv$female <- relevel(Gcsemv$gender, "M")
+
+
+# Use only total score on coursework paper 
+GCSE <- subset(x = Gcsemv, 
+               select = c(school, student, female, course))
+
+# Count unique schools and students
+J <- length(unique(GCSE$school))
+N <- nrow(GCSE)
+
+# Check structure of data frame
+str(GCSE)
+
+```
+
+Consider the simplest multilevel model for students $i=1,...,n$ nested within schools $j=1,...,J$ and for whom we have examination scores as responses. We can write a two-level varying intercept model with no predictors using the usual two-stage formulation as
+
+$$
+y_{ij} = \alpha_j + \epsilon_{ij} \text{ where } \epsilon_ij \sim N(0, \sigma_y^2) \\
+\alpha_j = \mu_\alpha + u_j \text{ where } u_j \sim N(0, \sigma_\alpha^2)
+$$
+
+where $y_ij$ is the examination score for the $i^{th}$ student in the $j^{th}$ school, $\alpha_j$ is the varying intercept for the $j^{th}$ school, and $\mu_\alpha$ is the overall mean across schools. Alternatively, the model can be expressed in reduced form as
+
+$$
+y_{ij} = \mu_\alpha + u_j + \epsilon_{ij}
+$$
+
+If we further assume that the student-level errors $\epsilon_{ij}$ are normally distributed with mean $0$ and variance $\sigma_y^2$, and that the school-level varying intercepts $\alpha_j$ are normally distributed with mean $\mu_\alpha$ and variance $\sigma_y^2$, then the model can be expressed as
+
+$$
+y_{ij} \sim N(\alpha_j, \sigma_y^2) \\
+\alpha_j \sim N(\mu_\alpha, \sigma_\alpha^2)
+$$
+
+This model can then be fit using `lmer()`. We specify an intercept (the predictor “1”) and allow it to vary by the level-2 identifier (school). We also specify the `REML = FALSE` option to obtain maximum likelihood (ML) estimates as opposed to the default restricted maximum likelihood (REML) estimates.
+
+```{r}
+
+M1 <- lmer(formula = course ~ 1 + (1 | school), 
+           data = GCSE, 
+           REML = FALSE)
+summary(M1)
+
+```
+
+The varying intercept model with an indicator variable for being female $x_ij$ can be written as 
+
+$$
+y_{ij} \sim N(\alpha_j + x_{ij}\beta, \sigma_y^2) \\
+\alpha_j \sim N(\mu_\alpha, \sigma_\alpha^2) \\
+\text{or equivalently} \\
+y_{ij} = \mu + \alpha_j + x_{ij} \beta + u_j + \epsilon_{ij} \text{ where } \\
+u_j \sim N(0, \sigma_\alpha^2) \\
+\epsilon_{ij} \sim N(0, \sigma_y^2)
+$$
+
+```{r}
+
+M2 <- lmer(formula = course ~ 1 + female + (1 | school), 
+           data = GCSE, 
+           REML = FALSE)
+summary(M2) 
+
+```
+
+
+```{r}
+
+# Complete-pooling regression
+pooled <- lm(formula = course ~ female,
+             data = GCSE)
+a_pooled <- coef(pooled)[1]   # complete-pooling intercept
+b_pooled <- coef(pooled)[2]   # complete-pooling slope
+
+# No-pooling regression
+nopooled <- lm(formula = course ~ 0 + school + female,
+               data = GCSE)
+a_nopooled <- coef(nopooled)[1:J]   # 73 no-pooling intercepts              
+b_nopooled <- coef(nopooled)[J+1]
+
+# Partial pooling (multilevel) regression
+a_part_pooled <- coef(M2)$school[, 1]
+b_part_pooled <- coef(M2)$school[, 2]
+
+```
+
+Then, we plot the data and school-specific regression lines for a selection of eight schools using the following commands:
+
+```{r}
+
+# (0) Set axes & choose schools
+y <- GCSE$course
+x <- as.numeric(GCSE$female) - 1 + runif(N, -.05, .05)
+schid <- GCSE$school
+sel.sch <- c("65385",
+             "68207",
+             "60729",
+             "67051",
+             "50631",
+             "60427",
+             "64321",
+             "68137")
+
+# (1) Subset 8 of the schools; generate data frame
+df <- data.frame(y, x, schid)
+df8 <- subset(df, schid %in% sel.sch)
+
+# (2) Assign complete-pooling, no-pooling, partial pooling estimates
+df8$a_pooled <- a_pooled 
+df8$b_pooled <- b_pooled
+df8$a_nopooled <- a_nopooled[df8$schid]
+df8$b_nopooled <- b_nopooled
+df8$a_part_pooled <- a_part_pooled[df8$schid]
+df8$b_part_pooled <- b_part_pooled[df8$schid]
+
+# (3) Plot regression fits for the 8 schools
+ggplot(data = df8, 
+       aes(x = x, y = y)) + 
+  facet_wrap(facets = ~ schid, 
+             ncol = 4) + 
+  theme_bw() +
+  geom_jitter(position = position_jitter(width = .05, 
+                                         height = 0)) +
+  geom_abline(aes(intercept = a_pooled, 
+                  slope = b_pooled), 
+              linetype = "solid", 
+              color = "blue", 
+              size = 0.5) +
+  geom_abline(aes(intercept = a_nopooled, 
+                  slope = b_nopooled), 
+              linetype = "longdash", 
+              color = "red", 
+              size = 0.5) + 
+  geom_abline(aes(intercept = a_part_pooled, 
+                  slope = b_part_pooled), 
+              linetype = "dotted", 
+              color = "purple", 
+              size = 0.7) + 
+  scale_x_continuous(breaks = c(0, 1), 
+                     labels = c("male", "female")) + 
+  labs(title = "Complete-pooling, No-pooling, and Partial pooling estimates",
+       x = "", 
+       y = "Total score on coursework paper")+theme_bw( base_family = "serif")
+
+```
+
+
+### 2.3 Model 3: Varying intercept and slope model with a single predictor
+
+We now extend the varying intercept model with a single predictor to allow both the intercept and the slope to vary randomly across schools using the following model8:
+$$
+y_{ij} \sim N(\alpha_j + x_{ij} \beta, \sigma_y^2) \\
+\begin{bmatrix} \alpha_j \\ \beta_j \end{bmatrix} \sim N\left( \begin{bmatrix} \mu_\alpha \\ \mu_\beta \end{bmatrix}, \begin{bmatrix} \sigma_\alpha^2 & \rho \sigma_\alpha \sigma_\beta \\ \rho \sigma_\alpha \sigma_\beta & \sigma_\beta^2 \end{bmatrix} \right)
+$$
+Note that now we have variation in the $\alpha_j$’s and the $\beta_j$’s, and also a correlation parameter $\rho$ between $\alpha_j$ and $\beta_j$. This model can be fit using `lmer()` as follows:
+
+```{r}
+
+M3 <- lmer(formula = course ~ 1 + female + (1 + female | school), 
+           data = GCSE, 
+           REML = FALSE)
+summary(M3) 
+
+```
+
+### 3 Bayesian inference for Model 1
+
+As a reminder Model 1 is specified as
+
+$$
+y_{ij} = \alpha_j + \epsilon_{ij} \text{ where } \epsilon_ij \sim N(0, \sigma_y^2) \\
+\alpha_j = \mu_\alpha + u_j \text{ where } u_j \sim N(0, \sigma_\alpha^2) \\
+\text{ or the equivalent } \\
+y_{ij} = \mu_\alpha + u_j + \epsilon_{ij}
+$$
+
+For example, Model 1 with default prior distributions for $\mu_\alpha$, $\sigma_\alpha$, and $\sigma_y$ can be specified using the **rstanarm** package by prepending `stan_` to the `lmer` call:
+
+```{r}
+
+M1_stanlmer <- stan_lmer(formula = course ~ 1 + (1 | school), 
+                         data = GCSE,
+                         seed = 349)
+
+```
+
+This `stan_lmer()` function is similar in syntax to `lmer()` but rather than performing maximum likelihood estimation, Bayesian estimation is performed via MCMC. As each step in the MCMC estimation approach involves random draws from the parameter space, we include a seed option to ensure that each time the code is run, `stan_lmer` outputs the same results.
+
+Here, we use the default prior distributions for the hyperparameters in `stan_lmer` by not specifying any prior options in `stan_lmer()` function. The default priors are intended to be weakly informative in that they provide moderate regularization and help stabilize computation. It should be noted that the authors of **rstanarm** suggest not relying on rstanarm to specify the default prior for a model, but rather, to specify the priors explicitly even if they are indeed the current default, as updates to the package may result in different defaults.
+
+
+```{r}
+
+prior_summary(M1_stanlmer)
+
+```
+
+
+```{r}
+
+print(M1_stanlmer, digits = 2)
+
+```
+
+
+#### Posterior means, posterior standard deviations, 95% credible intervals and Monte Carlo errors
+
+
+```{r}
+
+summary(M1_stanlmer, 
+        pars = c("(Intercept)", "sigma", "Sigma[school:(Intercept),(Intercept)]"),
+        probs = c(0.025, 0.975),
+        digits = 2)
+
+```
+
+#### Accessing the simulations and summarizing results
+
+
+```{r}
+
+# Extract the posterior draws for all parameters
+sims <- as.matrix(M1_stanlmer)
+dim(sims)
+
+```
+
+
+```{r}
+
+para_name <- colnames(sims)
+para_name
+
+```
+
+
+
+```{r}
+
+# Obtain school-level varying intercept a_j
+# draws for overall mean
+mu_a_sims <- as.matrix(M1_stanlmer, 
+                       pars = "(Intercept)")
+# draws for 73 schools' school-level error
+u_sims <- as.matrix(M1_stanlmer, 
+                    regex_pars = "b\\[\\(Intercept\\) school\\:")
+# draws for 73 schools' varying intercepts               
+a_sims <- as.numeric(mu_a_sims) + u_sims          
+
+# Obtain sigma_y and sigma_alpha^2
+# draws for sigma_y
+s_y_sims <- as.matrix(M1_stanlmer, 
+                       pars = "sigma")
+# draws for sigma_alpha^2
+s__alpha_sims <- as.matrix(M1_stanlmer, 
+                       pars = "Sigma[school:(Intercept),(Intercept)]")
+
+```
+
+
+#### Obtaining means, standard deviations, medians and 95% credible intervals
+
+In a_sims, we have saved 4,000 posterior draws (from all 4 chains) for the varying intercepts αj of the 73 schools. For example, the first column of the 4,000 by 73 matrix is a vector of 4,000 posterior simulation draws for the first school’s (School 20920) varying intercept $\alpha_1$. One quantitative way to summarize the posterior probability distribution of these 4,000 estimates for $\alpha_1$ is to examine their quantiles.
+
+```{r}
+
+# Compute mean, SD, median, and 95% credible interval of varying intercepts
+
+# Posterior mean and SD of each alpha
+a_mean <- apply(X = a_sims,     # posterior mean
+                MARGIN = 2,
+                FUN = mean)
+a_sd <- apply(X = a_sims,       # posterior SD
+              MARGIN = 2,
+              FUN = sd)
+
+# Posterior median and 95% credible interval
+a_quant <- apply(X = a_sims, 
+                 MARGIN = 2, 
+                 FUN = quantile, 
+                 probs = c(0.025, 0.50, 0.975))
+a_quant <- data.frame(t(a_quant))
+names(a_quant) <- c("Q2.5", "Q50", "Q97.5")
+
+# Combine summary statistics of posterior simulation draws
+a_df <- data.frame(a_mean, a_sd, a_quant)
+round(head(a_df), 2)
+
+```
+
+We can produce a caterpillar plot to show the fully Bayes estimates for the school varying intercepts in rank order together with their 95% credible intervals.
+
+```{r}
+
+# Sort dataframe containing an estimated alpha's mean and sd for every school
+a_df <- a_df[order(a_df$a_mean), ]
+a_df$a_rank <- c(1 : dim(a_df)[1])  # a vector of school rank 
+
+# Plot school-level alphas's posterior mean and 95% credible interval
+ggplot(data = a_df, 
+       aes(x = a_rank, 
+           y = a_mean)) +
+  geom_pointrange(aes(ymin = Q2.5, 
+                      ymax = Q97.5),
+                  position = position_jitter(width = 0.1, 
+                                             height = 0)) + 
+  geom_hline(yintercept = mean(a_df$a_mean), 
+             size = 0.5, 
+             col = "red") + 
+  scale_x_continuous("Rank", 
+                     breaks = seq(from = 0, 
+                                  to = 80, 
+                                  by = 5)) + 
+  scale_y_continuous(expression(paste("varying intercept, ", alpha[j]))) + 
+  theme_bw( base_family = "serif")
+
+```
+
+The same approach can be taken to generate 95% credible intervales for $\sigma_y$ and $\simga_\alpha$.
+
+---
+
+### Bayesian inference for Models 2 and 3
+
+#### Model 2: Adding a student-level predictor
+
+$$
+y_{ij} \sim N(\alpha_j + x_{ij}\beta, \sigma_y^2) \\
+\alpha_j \sim N(\mu_\alpha, \sigma_\alpha^2)
+$$
+
+```{r}
+
+M2_stanlmer <- stan_lmer(formula = course ~ female + (1 | school),
+                         data = GCSE,
+                         prior = normal(location = 0,
+                                        scale = 100,
+                                        autoscale = FALSE),
+                         prior_intercept = normal(location = 0,
+                                                  scale = 100,
+                                                  autoscale = FALSE),
+                         seed = 349)
+
+```
+
+
+```{r}
+
+prior_summary(object = M2_stanlmer)
+
+```
+
+
+```{r}
+
+M2_stanlmer
+
+```
+
+
+
+
+# Bayesian Logisitic Regression
+
+First, a quick recap of logistic regression. Logistic regression takes its name from the *logit* link function it utilizes:
+
+$$
+y_i | \phi_i \sim Bern(\phi_i) \\
+\phi = Pr(Y_i = 1 | \beta, X_i) \\
+\text{logit}(\phi) \equiv \text{log} \left( \frac{\phi_i}{1 - \phi_i} \right) = \beta_0 + \beta_1 x_i
+\implies E[Y_i] = \phi_i = \text{logit}^{-1}(\beta_0 + \beta_1 x_i) = \frac{1}{\exp\{-(\beta_0 + \beta_1 x_i)\} + 1}
+$$
+
+```{r}
+
+library(boot)
+data(urine)
+head(urine)
+
+```
+
+We have seven variables:
+ - `r` an indicator of the presence of a calcium oxalate crystal. This is the binary response variable we are seeking to model.
+ - `gravity` specific gravity
+ - `ph` the sample acidity
+ - `omso` osmolarity
+ - `cond` conductivity
+ - `urea` urea concentration
+ - `calc` the calcium concentration
+ 
+There are two rows with missing data in our data set. We will simply remove them for this demonstration.
+
+```{r}
+
+dat <- na.omit(urine)
+dim(dat)
+
+```
+
+
+```{r}
+
+pairs(dat)
+
+```
+
+Several covariates are strongly correlated with each other, for example `osmo` and `gravity`. This is a problem for inference but not necessarily a problem for prediction. The primary goal of this analysis is to determine which variables are related to the presence of calcium oxalate crystals (`r`), so we will have to find a way to handle with the collinearity between the predictors. This is a commonly encountered problem called *variable selection*.
+
+One way to address this problem is by using a linear model where the priors for $\beta$ coefficients place greater probability density around zero such as the double exponential or "Laplace" distribution. Posterior estimates near zero on the coefficients indicate weak relationships. This is known as the *Bayesian Lasso* ("BLASSO").
+
+Rather than tailoring a specific prior for each individual $\beta$ coefficient based on the scale of its covariate $X$, we normalize and standardize each predictor. We can use the `scale` function here. **Note:** If we had categorical variables we would exclude them from this operation.
+
+```{r}
+
+stan_lm()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
