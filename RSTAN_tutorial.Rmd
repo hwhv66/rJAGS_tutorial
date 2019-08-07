@@ -391,8 +391,74 @@ M2_stanlmer
 
 ```
 
+## Bayesian ANOVA
+
+```{r}
+
+data("PlantGrowth")
+str(PlantGrowth)
+
+```
+
+### One Way BANOVA
+
+```{r}
+
+PG_one_way <- PlantGrowth[PlantGrowth$group == "ctrl" | PlantGrowth$group == "trt1", ]
+
+```
+
+$$
+\text{weight}_{ij} = \mu + \text{group}_j + \epsilon_{ij} \text{ where } \\
+\text{group}_j \sim \mathcal{N}(0, \sigma_{\text{group}}^2) \\
+\epsilon_{ij} \sim \mathcal{N}(0, \sigma_y^2)
+$$
+The below model is a reference with which we can compare the Bayesian model.
+
+```{r}
+
+lmer(formula = weight ~ 1 + (1 | group),
+     data = PG_one_way,
+     REML = FALSE)
+
+```
 
 
+```{r}
+
+banova_1 <- stan_lmer(formula = weight ~ 1 + (1 | group),
+     data = PG_one_way,
+     seed = 1,
+     iter = 10000,
+     chains = 2,
+     thin = 5,
+     prior = normal(0, 100),
+     prior_aux = exponential(1/2)
+     )
+
+```
+
+
+```{r}
+
+neff_ratio(banova_1)
+
+```
+
+
+```{r}
+
+color_scheme_set("viridis")
+mcmc_trace(banova_1)
+mcmc_acf_bar(banova_1)
+
+```
+
+```{r}
+
+summary(banova_1)
+
+```
 
 # Bayesian Logisitic Regression
 
@@ -404,6 +470,7 @@ y_i | \phi_i \sim Bern(\phi_i) \\
 \text{logit}(\phi) \equiv \text{log} \left( \frac{\phi_i}{1 - \phi_i} \right) = \beta_0 + \beta_1 x_i
 \implies E[Y_i] = \phi_i = \text{logit}^{-1}(\beta_0 + \beta_1 x_i) = \frac{1}{\exp\{-(\beta_0 + \beta_1 x_i)\} + 1}
 $$
+
 
 ```{r}
 
