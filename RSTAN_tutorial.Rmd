@@ -11,6 +11,8 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## RSTAN
 
+url to tutorial: https://mc-stan.org/users/documentation/case-studies/tutorial_rstanarm.html#likelihood-inference-using-lmer
+
 ```{r}
 
 library(mlmRev)
@@ -21,6 +23,7 @@ library(bayesplot)
 library(ggmcmc)
 
 ```
+
 
 ```{r}
 
@@ -72,6 +75,11 @@ This model can then be fit using `lmer()`. We specify an intercept (the predicto
 M1 <- lmer(formula = course ~ 1 + (1 | school), 
            data = GCSE, 
            REML = FALSE)
+
+```
+
+```{r}
+
 summary(M1)
 
 ```
@@ -402,23 +410,20 @@ str(PlantGrowth)
 
 ### One Way BANOVA
 
-```{r}
-
-PG_one_way <- PlantGrowth[PlantGrowth$group == "ctrl" | PlantGrowth$group == "trt1", ]
-
-```
-
 $$
-\text{weight}_{ij} = \mu + \text{group}_j + \epsilon_{ij} \text{ where } \\
-\text{group}_j \sim \mathcal{N}(0, \sigma_{\text{group}}^2) \\
-\epsilon_{ij} \sim \mathcal{N}(0, \sigma_y^2)
+\text{weight}_{ij} = \text{group}_{j[i]} + \epsilon_{ij}, \text{ with } \epsilon_{ij} \sim \mathcal{N}(0, \sigma_y^2)\\
+\text{group}_j = \mu_{\text{group}} + \eta_j, \text{ with } \eta_j \sim \mathcal{N}(0, \sigma_\text{group}^2) \\
+\text{or equivalently} \\
+y_{ij} \sim \mathcal{N}(\text{group}_j, \sigma_y^2) \\
+\text{group}_j \sim \mathcal{N}(\mu_{\text{group}}, \sigma_{\text{group}}^2)
 $$
-The below model is a reference with which we can compare the Bayesian model.
+
+The below model is a frequentist reference with which we can compare the Bayesian model.
 
 ```{r}
 
-lmer(formula = weight ~ 1 + (1 | group),
-     data = PG_one_way,
+anova_1 <- lmer(formula = weight ~ 1 + (1 | group),
+     data = PlantGrowth,
      REML = FALSE)
 
 ```
@@ -427,7 +432,7 @@ lmer(formula = weight ~ 1 + (1 | group),
 ```{r}
 
 banova_1 <- stan_lmer(formula = weight ~ 1 + (1 | group),
-     data = PG_one_way,
+     data = PlantGrowth,
      seed = 1,
      iter = 10000,
      chains = 2,
@@ -456,7 +461,24 @@ mcmc_acf_bar(banova_1)
 
 ```{r}
 
+summary(anova_1)
+coefficients(anova_1)
+
+```
+
+```{r}
+
 summary(banova_1)
+coefficients(banova_1)
+
+```
+
+```{r}
+
+bayesplot::mcmc_areas(banova_1,
+                      pars = c("(Intercept)",
+                               "b[(Intercept) group:ctrl]",
+                               "b[(Intercept) group:trt1]"))
 
 ```
 
